@@ -14,32 +14,69 @@ namespace AudioIN
 		#region Fields
 
 		/// <summary>
-		/// Boolean value indicating if microphone intialized correctly
+		/// The OpenAL audio capture device
+		/// This will be NULL if shit is fucked up
 		/// </summary>
-		public bool isMicrophoneValid = false;
-
 		AudioCapture audio_capture;
 
-		private byte[] buffer = new byte[1024];
+		/// <summary>
+		/// The buffer to hold audio data.  
+		/// </summary>
+		private byte[] buffer;
 
+		/// <summary>
+		/// Flag used by the threading thing to check if it should keep spinning and checking mic data
+		/// </summary>
 		private bool continuePolling = false;
 
-		private Queue<byte[]> microphoneData = new Queue<byte[]>();
+		/// <summary>
+		/// A thread for doing all the microhpone audio processing
+		/// </summary>
+		Thread workerThread = null;
 
-		Thread pollMicrophone = null;
+		/// <summary>
+		/// The number of bytes in one sample.
+		/// </summary>
+		private int SampleToByte;
 
-		private int SampleToByte = 2;
-
+		/// <summary>
+		/// An openal source???
+		/// </summary>
 		private int src;
 
-		//Sample rate used to capture data per second
-		private int audioSamplingRate = 8000;
+		/// <summary>
+		/// Sample rate used to capture data per second
+		/// </summary>
+		private const int audioSamplingRate = 8000;
 
-		//Number of samples to collect (8000 samples per second / number of Samples = 64 ms of audio capture)
-		private int numberOfSamples = 512;
+		/// <summary>
+		/// Number of samples to collect (8000 samples per second / number of Samples = 64 ms of audio capture)
+		/// </summary>
+		private const int numberOfSamples = 512;
 
-		//Gain of microphone
-		private float microphoneGain = 4.0f;
+		/// <summary>
+		/// Gain of microphone
+		/// </summary>
+		private const float microphoneGain = 4.0f;
+
+		#region MicHandle Shit
+
+		/// <summary>
+		/// Used to average recent volume.
+		/// </summary>
+		private List <float> dbValues;
+
+		/// <summary>
+		/// The sound volume of the current frame. (stored in dannobels).
+		/// </summary>
+		private float m_fCurrentVolume = 0.0f;
+
+		/// <summary>
+		/// Used to find the max volume from the last x number of samples.
+		/// </summary>
+		private float m_fMaxVolume = 0.0f;
+
+		#endregion //MicHandle Shit
 
 		#endregion Fields
 
@@ -55,7 +92,7 @@ namespace AudioIN
 		/// <param name="bufferSize">Size of the buffer</param>
 		public Microphone()
 		{
-			isMicrophoneValid = InitializeMicrophone(audioSamplingRate, microphoneGain, AudioCapture.DefaultDevice, ALFormat.Mono16, numberOfSamples * 2);
+			InitializeMicrophone(audioSamplingRate, microphoneGain, AudioCapture.DefaultDevice, ALFormat.Mono16, numberOfSamples);
 		}
 
 		#endregion Constructors
@@ -63,18 +100,14 @@ namespace AudioIN
 		#region Properties
 
 		/// <summary>
-		/// Queue used to hold the incoming data from the microphone.
+		/// Gets a value indicating whether this instance is microphone valid.
 		/// </summary>
-		public Queue<byte[]> MicrophoneData
+		/// <value><c>true</c> if this instance is microphone valid; otherwise, <c>false</c>.</value>
+		private bool IsMicrophoneValid
 		{
 			get
 			{
-				return microphoneData;
-			}
-
-			set
-			{
-				microphoneData = value;
+				return (null != audio_capture);
 			}
 		}
 
@@ -87,15 +120,17 @@ namespace AudioIN
 		/// </summary>
 		public void StartRecording()
 		{
-			if (isMicrophoneValid == true)
+			if (IsMicrophoneValid)
 			{
+				//Start capturing data
 				audio_capture.Start();
 				continuePolling = true;
 
-				if (pollMicrophone == null || pollMicrophone.IsAlive == false)
+				//Spin up the thread to process all the mic data
+				if (workerThread == null || workerThread.IsAlive == false)
 				{
-					pollMicrophone = new Thread(PollMicrophoneForData);
-					pollMicrophone.Start();
+					workerThread = new Thread(PollMicrophoneForData);
+					workerThread.Start();
 				}
 			}
 		}
@@ -105,12 +140,11 @@ namespace AudioIN
 		/// </summary>
 		public void StopRecording()
 		{
-			if (isMicrophoneValid == true)
+			if (IsMicrophoneValid)
 			{
 				continuePolling = false;
 				audio_capture.Stop();
 				ClearBuffers(0);
-				MicrophoneData.Clear();
 			}
 		}
 
@@ -144,7 +178,7 @@ namespace AudioIN
 
 			SampleToByte = NumberOfBytesPerSample(format);
 
-			buffer = new byte[bufferSize];
+			buffer = new byte[bufferSize * SampleToByte];
 
 			try
 			{
@@ -161,110 +195,75 @@ namespace AudioIN
 			return true;
 		}
 
-		private int NumberOfBytesPerSample(ALFormat format)
+		private static int NumberOfBytesPerSample(ALFormat format)
 		{
-			int bytesPerSample = 2;
-
 			switch (format)
 			{
 				case ALFormat.Mono16:
-				bytesPerSample = 2;
-				break;
+				return 2;
 				case ALFormat.Mono8:
-				bytesPerSample = 1;
-				break;
+				return 1;
 				case ALFormat.MonoALawExt:
-				bytesPerSample = 1;
-				break;
+				return 1;
 				case ALFormat.MonoDoubleExt:
-				bytesPerSample = 8;
-				break;
+				return 8;
 				case ALFormat.MonoFloat32Ext:
-				bytesPerSample = 4;
-				break;
+				return 4;
 				case ALFormat.MonoIma4Ext:
-				bytesPerSample = 4;
-				break;
+				return 4;
 				case ALFormat.MonoMuLawExt:
-				bytesPerSample = 1;
-				break;
+				return 1;
 				case ALFormat.Mp3Ext:
-				bytesPerSample = 2; //Guessed might not be correct
-				break;
+				return 2; //Guessed might not be correct
 				case ALFormat.Multi51Chn16Ext:
-				bytesPerSample = 6 * 2;
-				break;
+				return 6 * 2;
 				case ALFormat.Multi51Chn32Ext:
-				bytesPerSample = 6 * 4;
-				break;
+				return 6 * 4;
 				case ALFormat.Multi51Chn8Ext:
-				bytesPerSample = 6 * 1;
-				break;
+				return 6 * 1;
 				case ALFormat.Multi61Chn16Ext:
-				bytesPerSample = 7 * 2;
-				break;
+				return 7 * 2;
 				case ALFormat.Multi61Chn32Ext:
-				bytesPerSample = 7 * 4;
-				break;
+				return 7 * 4;
 				case ALFormat.Multi61Chn8Ext:
-				bytesPerSample = 7 * 1;
-				break;
+				return 7 * 1;
 				case ALFormat.Multi71Chn16Ext:
-				bytesPerSample = 7 * 2;
-				break;
+				return 7 * 2;
 				case ALFormat.Multi71Chn32Ext:
-				bytesPerSample = 7 * 4;
-				break;
+				return 7 * 4;
 				case ALFormat.Multi71Chn8Ext:
-				bytesPerSample = 7 * 1;
-				break;
+				return 7 * 1;
 				case ALFormat.MultiQuad16Ext:
-				bytesPerSample = 4 * 2;
-				break;
+				return 4 * 2;
 				case ALFormat.MultiQuad32Ext:
-				bytesPerSample = 4 * 4;
-				break;
+				return 4 * 4;
 				case ALFormat.MultiQuad8Ext:
-				bytesPerSample = 4 * 1;
-				break;
+				return 4 * 1;
 				case ALFormat.MultiRear16Ext:
-				bytesPerSample = 1 * 2;
-				break;
+				return 1 * 2;
 				case ALFormat.MultiRear32Ext:
-				bytesPerSample = 1 * 4;
-				break;
+				return 1 * 4;
 				case ALFormat.MultiRear8Ext:
-				bytesPerSample = 1 * 1;
-				break;
+				return 1 * 1;
 				case ALFormat.Stereo16:
-				bytesPerSample = 2 * 2;
-				break;
+				return 2 * 2;
 				case ALFormat.Stereo8:
-				bytesPerSample = 2 * 1;
-				break;
+				return 2 * 1;
 				case ALFormat.StereoALawExt:
-				bytesPerSample = 2 * 1;
-				break;
+				return 2 * 1;
 				case ALFormat.StereoDoubleExt:
-				bytesPerSample = 2 * 8;
-				break;
+				return  2 * 8;
 				case ALFormat.StereoFloat32Ext:
-				bytesPerSample = 2 * 4;
-				break;
+				return  2 * 4;
 				case ALFormat.StereoIma4Ext:
-				bytesPerSample = 1; //Guessed
-				break;
+				return  1; //Guessed
 				case ALFormat.StereoMuLawExt:
-				bytesPerSample = 2 * 1;
-				break;
+				return  2 * 1;
 				case ALFormat.VorbisExt:
-				bytesPerSample = 2; //Guessed
-				break;
+				return  2; //Guessed
 				default:
-				break;
+				return 2;
 			}
-
-			return bytesPerSample;
 		}
 
 		/// <summary>

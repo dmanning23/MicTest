@@ -48,6 +48,7 @@
     <Compile Include="AudioIn.cs" />
     <Compile Include="AudioOut.cs" />
     <Compile Include="EmptyClass.cs" />
+    <Compile Include="MicHandle.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Icon.png" />
